@@ -94,10 +94,12 @@ class Neuron:
     def __init__(self, nInput):
         self.weight = [Value(random.uniform(-1,1)) for _ in range(nInput)]
         self.bias = Value(random.uniform(-1,1))
+
     def __call__(self,x):
         activation = sum((wi*xi for wi , xi in zip(self.weight, x)), self.bias)
         out = activation.tanh()
         return out
+    
     def parameters(self):
         return self.weight + [self.bias]
 
@@ -138,7 +140,7 @@ dataset = [[2.0, 3.0, -1.0],
 expected = [1.0, -1.0, -1.0, 1.0]
 
 #Training loop
-for iteration in range(10):
+for iteration in range(100000):
     #Forward pass
     prediction = [n(data) for data in dataset]
     loss = sum((yOutput - groundTruth)**2 for groundTruth, yOutput in zip(expected, prediction))
