@@ -5,7 +5,7 @@ N = torch.zeros((27,27), dtype=torch.int32)
 
 #Create a lookup table for letters to int value 
 chars = sorted(list(set(''.join(words)))) #Removes duplicate and makes all the words into a single array
-stoi = {s:i+1 for i,s in enumerate(chars)}
+stoi = {s:i+1 for i,s in enumerate(chars)} #string to int 
 stoi['.'] = 0
 
 for word in words:
@@ -15,18 +15,17 @@ for word in words:
         ix2 = stoi [char2]
         N[ix1,ix2] += 1
 
-itos = {i:s for s,i in stoi.items()} #reverse mapping of stoi
+itos = {i:s for s,i in stoi.items()} #reverse mapping of stoi (int to string)
 
 probMatrix = (N + 1).float()
 probMatrix = probMatrix / probMatrix.sum(1, keepdim = True)
-generator = torch.Generator().manual_seed(2147483647)
 
 for i in range(10):
     out =[]
     index = 0 
     while True:
         probability = probMatrix[index]
-        index = torch.multinomial(probability, num_samples=1, replacement=True, generator = generator).item()
+        index = torch.multinomial(probability, num_samples=1, replacement=True).item()
         out.append(itos[index])
         if index == 0:
             break
@@ -45,16 +44,14 @@ for word in words:
         log_likelihood += logprob
         n += 1
 negLob_likelihood = -log_likelihood
-print(f'Loss: {negLob_likelihood/n}')
 
-
-#Create training set of bigrams
+#Create dataset of bigrams
 xs, ys = [], []
 
 for word in words:
     chars = ['.'] + list(word) + ['.']
 
-    for char1, char2 in zip (chars, chars[1:]):
+    for char1, char2 in zip(chars, chars[1:]):
         index1 = stoi[char1]
         index2 = stoi[char2]
         xs.append(index1)
@@ -62,5 +59,21 @@ for word in words:
 
 xs = torch.tensor(xs)
 ys = torch.tensor(ys)
+num = xs.nelement()
 
-F.one_hot(xs,num_classes = 27)
+for k in range(10):
+    #Forward pass
+    xEncoded = F.one_hot(xs,num_classes = 27).float() #float32 for nn training but xEncoded is int64
+    weights = torch.randn((27,27), requires_grad=True) #No requires_grad=True makes loss.backward() break
+
+    logits = xEncoded @ weights #Log-counts
+    counts = logits.exp() 
+    probs = counts/counts.sum(1, keepdim= True)
+    #Last 2 lines: Soft max activation function
+    loss = -probs[torch.arange(num), ys].log().mean() #Average log likehood
+
+    #Backward pass
+    weights.grad = None #Set grad to zero
+    loss.backward()
+    weights.data += -0.01 * weights.grad
+    print(loss.item())
