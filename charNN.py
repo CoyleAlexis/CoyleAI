@@ -60,12 +60,11 @@ for word in words:
 xs = torch.tensor(xs)
 ys = torch.tensor(ys)
 num = xs.nelement()
+weights = torch.randn((27,27), requires_grad=True) #No requires_grad=True makes loss.backward() break
 
 for k in range(10):
     #Forward pass
-    xEncoded = F.one_hot(xs,num_classes = 27).float() #float32 for nn training but xEncoded is int64
-    weights = torch.randn((27,27), requires_grad=True) #No requires_grad=True makes loss.backward() break
-
+    xEncoded = F.one_hot(xs,num_classes = 27).float() #float32 for nn training but xEncoded is int64 
     logits = xEncoded @ weights #Log-counts
     counts = logits.exp() 
     probs = counts/counts.sum(1, keepdim= True)
@@ -75,5 +74,5 @@ for k in range(10):
     #Backward pass
     weights.grad = None #Set grad to zero
     loss.backward()
-    weights.data += -0.01 * weights.grad
+    weights.data += -50 * weights.grad
     print(loss.item())
