@@ -8,7 +8,9 @@ chars = sorted(list(set(''.join(words)))) #Removes duplicate and makes all the w
 stoi = {s:i+1 for i,s in enumerate(chars)} #string to int 
 stoi['.'] = 0
 
-for word in words:
+block_size = 3 # Numbers of letter we use as ref
+X,Y = [], []
+for word in words[:5]:
     chars = ['.'] + list(word) + ['.']
     for char1, char2 in zip(chars, chars[1:]):
         ix1 = stoi[char1]
