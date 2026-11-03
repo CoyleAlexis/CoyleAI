@@ -40,32 +40,104 @@ Xtest, Ytest = build_dataset(words[nbWords2:]) #Other 10% of words
 
 #Hidden layer
 char_embeddings = torch.randn((vocab_size, embedding_dim))
-weight1 = torch.randn((block_size * embedding_dim, hidden_neurons)) *0.2
-bias1 = torch.randn(hidden_neurons) * 0.01
 
-#Output layer
-weight2 = torch.randn((hidden_neurons, vocab_size)) * 0.01
-bias2 = torch.randn(vocab_size) * 0 #Zero initially
+class Linear:
+    def __init__(self, fan_in, fan_out, bias=True):
+        self.weight = torch.randn(fan_in, fan_out) / fan_in**0.5
+        self.bias = torch.zeros(fan_out) if bias else None
 
-parameters = [char_embeddings, weight1, bias1, weight2, bias2]
+    def __call__(self, x):
+        self.out = x @ self.weight
+        if self.bias is not None:
+            self.out += self.bias
+        return self.out
+    def parameters(self):
+        return [self.weight] + ([] if self.bias is None else [self.bias])
 
+class BatchNorm1d:
+    def __init__(self, dim, eps=1e-5, momentum=0.1):
+        self.eps = eps
+        self.momentum = momentum
+        self.training = True
+
+        #Params trained with backprop
+        self.gamma = torch.ones(dim)
+        self.beta = torch.zeros(dim)
+
+        #Buffers trained with a momentum update
+        self.running_mean = torch.zeros(dim)
+        self.running_var = torch.ones(dim)
+
+    def __call__(self, x):
+        #Calculate forward pass
+        if self.training:
+            xmean = x.mean(0, keepdim=True)
+            xvar = x.var(0, keepdim=True)
+        else:
+            xmean = self.running_mean
+            xvar = self.running_var
+        xhat = (x - xmean) / torch.sqrt(xvar + self.eps) #Normalize to unit variance
+        self.out = self.gamma * xhat + self.beta
+
+        #Update buffers
+        if self.training:
+            with torch.no_grad():
+                self.running_mean = (1 - self.momentum) * self.running_mean + self.momentum * xmean
+                self.running_var = (1 - self.momentum)  * self.running_var + self.momentum * xvar
+        return self.out
+    def parameters(self):
+        return [self.gamma, self.beta]
+
+class Tanh:
+    def __call__(self, x):
+        self.out = torch.tanh(x)
+        return self.out
+    def parameters(self):
+        return []
+def forward(X):
+    embedding = char_embeddings[X]
+    flattened_embedding = embedding.view(embedding.shape[0], -1)
+
+    output = flattened_embedding
+
+    for layer in layers:
+        output = layer(output)
+
+    return output
+layers = [
+    Linear(embedding_dim * block_size, hidden_neurons), BatchNorm1d(hidden_neurons), Tanh(),
+    Linear(            hidden_neurons, hidden_neurons), BatchNorm1d(hidden_neurons), Tanh(),
+    Linear(            hidden_neurons, hidden_neurons), BatchNorm1d(hidden_neurons), Tanh(),
+    Linear(            hidden_neurons, hidden_neurons), BatchNorm1d(hidden_neurons), Tanh(),
+    Linear(            hidden_neurons, hidden_neurons), BatchNorm1d(hidden_neurons), Tanh(),
+    Linear(            hidden_neurons, vocab_size), BatchNorm1d(vocab_size)
+]
+
+with torch.no_grad():
+    layers[-1].gamma *= 0.1 #If last layer is BatchNorm1d we make gamma less confident if its Linear then its the weight
+    for layer in layers[:-1]:
+        if isinstance(layer,Linear):
+            layer.weight *= 5/3
+
+
+parameters = [char_embeddings] + [p for layer in layers for p in layer.parameters()]
 for p in parameters:
     p.requires_grad = True #PyTorch needs gradients for loss.backward()
 
-for itiration in range(200000):
+nb_steps = 200000
+batch_size = 32
+for itiration in range(nb_steps):
     #Create mini batch of data from our dataset to optimize training. Less precise gradient but faster steps
-    training_data = torch.randint(0, Xtr.shape[0], (32,))
+    training_data = torch.randint(0, Xtr.shape[0], (batch_size,))
+    Xbatch, Ybatch = Xtr[training_data], Ytr[training_data]
 
     #Forward pass
-    embedding = char_embeddings[Xtr[training_data]]
-    embedding_cat = embedding.view(embedding.shape[0], -1)
-    hidden_activations = torch.tanh(embedding_cat.view(embedding.shape[0], -1) @ weight1 + bias1) # -1 makes pytorch automatically decided the dimension
-    logits = hidden_activations @ weight2 + bias2
-    loss = F.cross_entropy(logits, Ytr[training_data]) #More efficient and stable than calculating loss manually with the mean of -log
+    logits = forward(Xbatch)
+    loss = F.cross_entropy(logits, Ybatch)
 
     #Backward pass 
-    for p in parameters: 
-        p.grad = None #zero grad
+    for p in parameters:
+        p.grad = None
     loss.backward()
 
     learning_rate = 0.1 if itiration < 100000 else 0.02
@@ -73,16 +145,21 @@ for itiration in range(200000):
     for p in parameters:
         p.data += -learning_rate * p.grad
     if itiration % 10000 == 0:
-        print(f'Loss at itiration {itiration}/200000: {loss}')
+        print(f'Loss at itiration {itiration}/{nb_steps}: {loss.item():.4f}')
+
+#Change model mode
+for layer in layers:
+    if isinstance(layer,BatchNorm1d):
+        layer.training = False
 
 #Create 20 words
-for _ in range(20):
+for _ in range(100):
     out = []
     context = [0] * block_size
     while True:
-        embedding = char_embeddings[torch.tensor([context])]
-        hidden_activations = torch.tanh(embedding.view(1, -1) @ weight1 + bias1)
-        logits = hidden_activations @ weight2 + bias2
+        input = torch.tensor([context])
+
+        logits = forward(input)
         probs = F.softmax(logits, dim=1)
 
         #Sample from dataset
@@ -104,11 +181,15 @@ def split_loss(split):
         'val' : (Xdev, Ydev),
         'test' : (Xtest, Ytest)
     }[split]
-    embedding = char_embeddings[X]
-    embedding_cat = embedding.view(embedding.shape[0], -1)
-    hidden_activations = torch.tanh(embedding_cat @ weight1 + bias1)
-    logits = hidden_activations @ weight2 + bias2
-    loss = F.cross_entropy(logits, Y)
+
+    #Eval mode
+    for layer in layers:
+        if isinstance(layer, BatchNorm1d):
+            layer.training = False
+
+    logits = forward(X)
+    
+    loss = F.cross_entropy(logits, Y)  #More efficient and stable than calculating loss manually with the mean of -log
     print(f'Loss {split}: {loss}')
     
 split_loss('train')
