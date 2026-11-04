@@ -2,7 +2,6 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 import os
-from model import BigramLanguageModel
 
 with open('input.txt', 'r', encoding='utf-8') as file:
     text = file.read()
@@ -24,15 +23,94 @@ val_data = data[train_quantity:]
 block_size = 8
 batch_size = 32
 train_model = True
-nb_train_iter = 1000
-eval_interval = 100
+nb_train_iter = 10000
+eval_interval = 1000
 eval_iter = 200
+num_embeddings = 32
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
+class Head(nn.Module):
+    #Single head attention
+    def __init__(self, head_size):
+        super().__init__()
+        self.key = nn.Linear(num_embeddings, head_size, bias=False)
+        self.query = nn.Linear(num_embeddings, head_size, bias=False)
+        self.value = nn.Linear(num_embeddings, head_size, bias=False)
+        self.register_buffer('tril', torch.tril(torch.ones(block_size, block_size)))
     
-model = BigramLanguageModel(vocab_size)
-model = model.to(device)
+    def forward(self, input):
+        B,T,C = input.shape
+        key = self.key(input)
+        query = self.query(input)
 
+        #Attention scores
+        weight = query @ key.transpose(-2, -1) * C**-0.5
+        weight = weight.masked_fill(self.tril[:T, :T] == 0, float('-inf'))
+        weight = F.softmax(weight, dim=-1)
+
+        #Weights aggregation of values
+        value = self.value(input)
+        out = weight @ value
+        return out
+
+class MultiHeadAttention(nn.Module):
+    def __init__(self, num_heads, head_size):
+        super().__init__()
+        self.heads = nn.ModuleList([Head(head_size) for _ in range(num_heads)])
+    
+    def forward(self, input):
+        return torch.cat([h(input) for h in self.heads], dim=-1)
+
+class BigramLanguageModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        #Each token reads off the logits for the next token
+        self.token_embedding_table = nn.Embedding(vocab_size, num_embeddings)
+        self.position_embedding_table = nn.Embedding(block_size, num_embeddings)
+        self.self_attention_heads = MultiHeadAttention(4, num_embeddings // 4)
+        self.lang_model_head = nn.Linear(num_embeddings, vocab_size)
+
+    def forward(self, inputs, targets=None):
+        B, T = inputs.shape
+
+        token_embeddings = self.token_embedding_table(inputs)
+        position_embeddings = self.position_embedding_table(torch.arange(T, device=device))
+        head_input = token_embeddings + position_embeddings #(B, T, C)
+        head_input = self.self_attention_heads(head_input)
+        logits = self.lang_model_head(head_input)
+
+
+        if targets is None:
+            loss = None
+        else:
+            B, T, C = logits.shape
+            logits = logits.view(B*T, C)
+            targets = targets.view(B*T)
+            loss = F.cross_entropy(logits, targets)
+        return logits, loss
+
+    def generate(self, index, max_new_token):
+        for _ in range(max_new_token):
+            #Crop index so it fits block_size
+            index_cropped = index[:, -block_size:]
+
+            #Prediction
+            logits, loss = self(index_cropped)
+            logits = logits[:, -1, :]
+
+            #Softmax for probabilities
+            probs = F.softmax(logits, dim=-1)
+
+            #Sample from distribution
+            index_next = torch.multinomial(probs, num_samples=1)
+
+            #Append sampled to current sequence
+            index = torch.cat((index, index_next), dim=1)
+        return index
+
+
+model = BigramLanguageModel()
+model = model.to(device)
 
 def get_batch(split):
     #Creates small batch of data with inputs (x) and targets (y)
@@ -77,7 +155,7 @@ if train_model:
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
     
     for iter in range(nb_train_iter):
-        if iter % nb_train_iter == 0 :
+        if iter % eval_interval == 0 :
             losses = estimate_loss()
             print(f"Step {iter}: Train loss {losses['train']:.4f}, Val loss {losses['val']:.4f}" )
 
@@ -95,6 +173,6 @@ if train_model:
 model.eval()
 with torch.no_grad():
     context = torch.zeros((1,1), dtype=torch.long, device=device)
-    generated = model.generate(context, max_new_token=100)
+    generated = model.generate(context, max_new_token=1000)
 
     print(decode(generated[0].tolist()))
