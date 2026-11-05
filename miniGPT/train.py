@@ -20,13 +20,17 @@ train_quantity = int(0.9 * len(data))
 train_data = data[:train_quantity]
 val_data = data[train_quantity:]
 
-block_size = 8
-batch_size = 32
+learning_rate = 3e-4
+block_size = 256
+batch_size = 64
 train_model = True
 nb_train_iter = 10000
 eval_interval = 1000
 eval_iter = 200
-num_embeddings = 32
+num_embeddings = 128 #Needs to be divisible by num_head
+num_head = 4 
+num_layer = 3
+dropout = 0.2
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 class Head(nn.Module):
@@ -37,7 +41,9 @@ class Head(nn.Module):
         self.query = nn.Linear(num_embeddings, head_size, bias=False)
         self.value = nn.Linear(num_embeddings, head_size, bias=False)
         self.register_buffer('tril', torch.tril(torch.ones(block_size, block_size)))
-    
+
+        self.dropout = nn.Dropout(dropout)
+
     def forward(self, input):
         B,T,C = input.shape
         key = self.key(input)
@@ -47,7 +53,7 @@ class Head(nn.Module):
         weight = query @ key.transpose(-2, -1) * C**-0.5
         weight = weight.masked_fill(self.tril[:T, :T] == 0, float('-inf'))
         weight = F.softmax(weight, dim=-1)
-
+        weight = self.dropout(weight)
         #Weights aggregation of values
         value = self.value(input)
         out = weight @ value
@@ -57,9 +63,58 @@ class MultiHeadAttention(nn.Module):
     def __init__(self, num_heads, head_size):
         super().__init__()
         self.heads = nn.ModuleList([Head(head_size) for _ in range(num_heads)])
-    
+        self.projection = nn.Linear(num_embeddings, num_embeddings)
+        self.dropout = nn.Dropout(dropout)
+
     def forward(self, input):
-        return torch.cat([h(input) for h in self.heads], dim=-1)
+        out = torch.cat([h(input) for h in self.heads], dim=-1)
+        out = self.projection(out)
+        return(out)
+    
+class FeedForward(nn.Module):
+    def __init__(self, num_embeddings):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(num_embeddings, 4 * num_embeddings), 
+            nn.ReLU(),
+            nn.Linear(4 * num_embeddings, num_embeddings),
+            nn.Dropout(dropout)
+        )
+
+    def forward(self, x):
+        return self.net(x)
+    
+# class BatchNorm1d:
+#     def __init__(self, dim, eps=1e-5):
+#         self.eps = eps
+#         #Params trained with backprop
+#         self.gamma = torch.ones(dim)
+#         self.beta = torch.zeros(dim)
+
+#     def __call__(self, x):
+#         #Calculate forward pass
+#         xmean = x.mean(1, keepdim=True) #Change 0 to one from the charNN.py for layer norm rather than batch norm
+#         xvar = x.var(1, keepdim=True)
+#         xhat = (x - xmean) / torch.sqrt(xvar + self.eps) #Normalize to unit variance
+#         self.out = self.gamma * xhat + self.beta
+
+#         return self.out
+#     def parameters(self):
+#         return [self.gamma, self.beta]
+
+class Block(nn.Module):
+    def __init__(self , num_embeddings, num_head):
+        super().__init__()
+        head_size = num_embeddings // num_head
+        self.self_attention = MultiHeadAttention(num_head, head_size)
+        self.feed_forward = FeedForward(num_embeddings)
+        self.layer_norm1 = nn.LayerNorm(num_embeddings)
+        self.layer_norm2 = nn.LayerNorm(num_embeddings)
+
+    def forward(self, x):
+        x = x + self.self_attention(self.layer_norm1(x))
+        x = x + self.feed_forward(self.layer_norm2(x))
+        return x
 
 class BigramLanguageModel(nn.Module):
     def __init__(self):
@@ -67,7 +122,8 @@ class BigramLanguageModel(nn.Module):
         #Each token reads off the logits for the next token
         self.token_embedding_table = nn.Embedding(vocab_size, num_embeddings)
         self.position_embedding_table = nn.Embedding(block_size, num_embeddings)
-        self.self_attention_heads = MultiHeadAttention(4, num_embeddings // 4)
+        self.blocks = nn.Sequential(*[Block(num_embeddings, num_head=num_head) for _ in range(num_layer)])
+        self.layer_norm_finish = nn.LayerNorm(num_embeddings)
         self.lang_model_head = nn.Linear(num_embeddings, vocab_size)
 
     def forward(self, inputs, targets=None):
@@ -76,7 +132,7 @@ class BigramLanguageModel(nn.Module):
         token_embeddings = self.token_embedding_table(inputs)
         position_embeddings = self.position_embedding_table(torch.arange(T, device=device))
         head_input = token_embeddings + position_embeddings #(B, T, C)
-        head_input = self.self_attention_heads(head_input)
+        head_input = self.blocks(head_input)
         logits = self.lang_model_head(head_input)
 
 
@@ -123,7 +179,7 @@ def get_batch(split):
 
 xb, yb = get_batch("train")
 
-@torch.no_grad
+@torch.no_grad()
 def estimate_loss():
     out = {}
     model.eval()
@@ -152,7 +208,7 @@ if train_model:
     model.train()
  
     #Create PyTorch optimizer
-    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
     
     for iter in range(nb_train_iter):
         if iter % eval_interval == 0 :
