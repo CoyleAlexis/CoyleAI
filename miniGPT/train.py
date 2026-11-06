@@ -23,9 +23,9 @@ val_data = data[train_quantity:]
 learning_rate = 3e-4
 block_size = 256
 batch_size = 64
-train_model = True
-nb_train_iter = 100
-eval_interval = 50
+train_model = False
+nb_train_iter = 10000
+eval_interval = 1000
 eval_iter = 50
 num_embeddings = 384 #Needs to be divisible by num_head
 num_head = 6
@@ -50,7 +50,7 @@ class Head(nn.Module):
         query = self.query(input)
 
         #Attention scores
-        weight = query @ key.transpose(-2, -1) * C**-0.5
+        weight = query @ key.transpose(-2, -1) * key.shape[1]**-0.5
         weight = weight.masked_fill(self.tril[:T, :T] == 0, float('-inf'))
         weight = F.softmax(weight, dim=-1)
         weight = self.dropout(weight)
@@ -84,24 +84,6 @@ class FeedForward(nn.Module):
     def forward(self, x):
         return self.net(x)
     
-# class BatchNorm1d:
-#     def __init__(self, dim, eps=1e-5):
-#         self.eps = eps
-#         #Params trained with backprop
-#         self.gamma = torch.ones(dim)
-#         self.beta = torch.zeros(dim)
-
-#     def __call__(self, x):
-#         #Calculate forward pass
-#         xmean = x.mean(1, keepdim=True) #Change 0 to one from the charNN.py for layer norm rather than batch norm
-#         xvar = x.var(1, keepdim=True)
-#         xhat = (x - xmean) / torch.sqrt(xvar + self.eps) #Normalize to unit variance
-#         self.out = self.gamma * xhat + self.beta
-
-#         return self.out
-#     def parameters(self):
-#         return [self.gamma, self.beta]
-
 class Block(nn.Module):
     def __init__(self , num_embeddings, num_head):
         super().__init__()
@@ -133,6 +115,7 @@ class BigramLanguageModel(nn.Module):
         position_embeddings = self.position_embedding_table(torch.arange(T, device=device))
         head_input = token_embeddings + position_embeddings #(B, T, C)
         head_input = self.blocks(head_input)
+        head_input = self.layer_norm_finish(head_input)
         logits = self.lang_model_head(head_input)
 
 
@@ -186,7 +169,6 @@ def estimate_loss():
     for split in ['train', 'val']:
         losses = torch.zeros(eval_iter)
         for k in range(eval_iter):
-            print(f"Evaluating {split}: {k+1}/{eval_iter}", flush=True)
             X, Y = get_batch(split)
             logits, loss = model(X,Y)
             losses[k] = loss.item()
@@ -204,30 +186,24 @@ else:
 
 logits, loss = model(xb,yb)
 
+
 #Optimize
 if train_model:
+    print(f"Used device: {device}") #Prints used device for training
     model.train()
  
     #Create PyTorch optimizer
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
     for iter in range(nb_train_iter):
-        print(f"\nStarting step {iter + 1}/{nb_train_iter}", flush=True)
 
         if iter % eval_interval == 0 :
             losses = estimate_loss()
             print(f"Step {iter}: Train loss {losses['train']:.4f}, Val loss {losses['val']:.4f}" )
 
-        print("  Loading batch...", flush=True)
         xb, yb = get_batch("train")
-        
-        print("  Forward pass...", flush=True)
         logits, loss = model(xb,yb)
-
-        print("  Backpropagation...", flush=True)
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
-
-        print("  Updating weights...", flush=True)
         optimizer.step()
     #Save after training
     torch.save(model.state_dict(), 'miniGPT.pth')
