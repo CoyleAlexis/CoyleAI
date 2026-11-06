@@ -24,12 +24,12 @@ learning_rate = 3e-4
 block_size = 256
 batch_size = 64
 train_model = True
-nb_train_iter = 10000
-eval_interval = 1000
-eval_iter = 200
-num_embeddings = 128 #Needs to be divisible by num_head
-num_head = 4 
-num_layer = 3
+nb_train_iter = 100
+eval_interval = 50
+eval_iter = 50
+num_embeddings = 384 #Needs to be divisible by num_head
+num_head = 6
+num_layer = 6
 dropout = 0.2
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -186,6 +186,7 @@ def estimate_loss():
     for split in ['train', 'val']:
         losses = torch.zeros(eval_iter)
         for k in range(eval_iter):
+            print(f"Evaluating {split}: {k+1}/{eval_iter}", flush=True)
             X, Y = get_batch(split)
             logits, loss = model(X,Y)
             losses[k] = loss.item()
@@ -209,17 +210,24 @@ if train_model:
  
     #Create PyTorch optimizer
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
-    
     for iter in range(nb_train_iter):
+        print(f"\nStarting step {iter + 1}/{nb_train_iter}", flush=True)
+
         if iter % eval_interval == 0 :
             losses = estimate_loss()
             print(f"Step {iter}: Train loss {losses['train']:.4f}, Val loss {losses['val']:.4f}" )
 
+        print("  Loading batch...", flush=True)
         xb, yb = get_batch("train")
-
+        
+        print("  Forward pass...", flush=True)
         logits, loss = model(xb,yb)
+
+        print("  Backpropagation...", flush=True)
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
+
+        print("  Updating weights...", flush=True)
         optimizer.step()
     #Save after training
     torch.save(model.state_dict(), 'miniGPT.pth')
