@@ -24,8 +24,8 @@ learning_rate = 3e-4
 block_size = 256
 batch_size = 64
 train_model = True
-nb_train_iter = 1000
-eval_interval = 200
+nb_train_iter = 20
+eval_interval = 10
 eval_iter = 50
 num_embeddings = 384 #Needs to be divisible by num_head
 num_head = 6
@@ -214,6 +214,6 @@ if train_model:
 model.eval()
 with torch.no_grad():
     context = torch.zeros((1,1), dtype=torch.long, device=device)
-    generated = model.generate(context, max_new_token=1000)
+    generated = model.generate(context, max_new_token=10000)
 
     print(decode(generated[0].tolist()))
