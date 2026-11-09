@@ -23,15 +23,16 @@ val_data = data[train_quantity:]
 learning_rate = 3e-4
 block_size = 256
 batch_size = 64
-train_model = False
-nb_train_iter = 10000
-eval_interval = 1000
+train_model = True
+nb_train_iter = 1000
+eval_interval = 200
 eval_iter = 50
 num_embeddings = 384 #Needs to be divisible by num_head
 num_head = 6
 num_layer = 6
 dropout = 0.2
-device = 'cuda' if torch.cuda.is_available() else 'cpu'
+#Check if GPU is available and supported otherwise uses cpu
+device = 'cuda' if (torch.cuda.is_available() and torch.cuda.get_device_capability(0) == 1) else 'cpu'
 
 class Head(nn.Module):
     #Single head attention
