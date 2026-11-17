@@ -23,10 +23,11 @@ val_data = data[train_quantity:]
 learning_rate = 3e-4
 block_size = 256
 batch_size = 64
-train_model = False
-nb_train_iter = 50
-eval_interval = 25
-eval_iter = 75
+start_step = 0
+train_model = True
+nb_train_iter = 100
+eval_interval = 10
+eval_iter = 200
 num_embeddings = 384 #Needs to be divisible by num_head
 num_head = 6
 num_layer = 6
@@ -51,7 +52,7 @@ class Head(nn.Module):
         query = self.query(input)
 
         #Attention scores
-        weight = query @ key.transpose(-2, -1) * key.shape[1]**-0.5
+        weight = query @ key.transpose(-2, -1) * key.shape[-1]**-0.5
         weight = weight.masked_fill(self.tril[:T, :T] == 0, float('-inf'))
         weight = F.softmax(weight, dim=-1)
         weight = self.dropout(weight)
@@ -70,6 +71,7 @@ class MultiHeadAttention(nn.Module):
     def forward(self, input):
         out = torch.cat([h(input) for h in self.heads], dim=-1)
         out = self.projection(out)
+        out = self.dropout(out)
         return(out)
     
 class FeedForward(nn.Module):
@@ -151,6 +153,7 @@ class BigramLanguageModel(nn.Module):
 
 model = BigramLanguageModel()
 model = model.to(device)
+optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
 
 def get_batch(split):
     #Creates small batch of data with inputs (x) and targets (y)
@@ -179,11 +182,19 @@ def estimate_loss():
 
 #Load saved params if there is any
 if os.path.exists('miniGPT.pth'):
-    model.load_state_dict(torch.load('miniGPT.pth', weights_only=True))
+    checkpoint = torch.load('miniGPT.pth', map_location=device, weights_only=True)
+    model.load_state_dict(checkpoint["model"])
+    optimizer.load_state_dict(checkpoint["optimizer"])
+    start_step = checkpoint["step"]
     print("Saved model loaded!")
 else:
     print("No saved model found. Starting from scratch.")
     train_model=True
+
+if train_model:
+    print(f"Resuming from step: {start_step}")
+elif start_step == 0:
+    print("Starting training...")
 
 logits, loss = model(xb,yb)
 
@@ -192,28 +203,38 @@ logits, loss = model(xb,yb)
 if train_model:
     print(f"Used device: {device}") #Prints used device for training
     model.train()
- 
-    #Create PyTorch optimizer
-    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
-    for iter in range(nb_train_iter):
+    completed_step = 0
+    #Saves model even if theres a KeyboardInterupt
+    try:
+        for iter in range(start_step, start_step + nb_train_iter):
 
-        if iter % eval_interval == 0 :
-            losses = estimate_loss()
-            print(f"Step {iter}: Train loss {losses['train']:.4f}, Val loss {losses['val']:.4f}" )
+            if iter % eval_interval == 0 :
+                losses = estimate_loss()
+                print(f"Step {iter}: Train loss {losses['train']:.4f}, Val loss {losses['val']:.4f}" )
 
-        xb, yb = get_batch("train")
-        logits, loss = model(xb,yb)
-        optimizer.zero_grad(set_to_none=True)
-        loss.backward()
-        optimizer.step()
-    #Save after training
-    torch.save(model.state_dict(), 'miniGPT.pth')
+            xb, yb = get_batch("train")
+            logits, loss = model(xb,yb)
+            optimizer.zero_grad(set_to_none=True)
+            loss.backward()
+            optimizer.step()
+            completed_step = iter + 1
+
+    except KeyboardInterrupt:
+        print("\n Training stopped")
+
+    finally:  
+        print(f"Saving checkpoint at step: {completed_step}... ")
+        #Save after training
+        torch.save({"model" : model.state_dict(), 
+                    "optimizer" : optimizer.state_dict(), 
+                    "step": iter + 1}, "miniGPT.pth")
+        
     print(f"Final training loss: {loss.item():.4f}")
 
 #Generate text
 model.eval()
 with torch.no_grad():
     context = torch.zeros((1,1), dtype=torch.long, device=device)
-    generated = model.generate(context, max_new_token=10000)
+    generated = model.generate(context, max_new_token=1000)
 
     print(decode(generated[0].tolist()))
